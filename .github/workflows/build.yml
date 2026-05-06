@@ -1,1 +1,75 @@
+name: Build IPA
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Checkout sing-box-for-apple
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Checkout sing-box core
+        uses: actions/checkout@v4
+        with:
+          repository: SagerNet/sing-box
+          ref: v1.14.0-alpha.21
+          path: box
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Install sagernet gomobile
+        run: |
+          go install -v github.com/sagernet/gomobile/cmd/gomobile@v0.1.12
+          go install -v github.com/sagernet/gomobile/cmd/gobind@v0.1.12
+          gomobile init
+
+      - name: Build Libbox.xcframework
+        run: |
+          cd box
+          make lib_install
+          go run ./cmd/internal/build_libbox -target apple -platform ios,tvos,macos
+          cd ..
+          cp -r box/Libbox.xcframework ./Libbox.xcframework
+
+      - name: Auto-patch Swift Code (Ultimate Magic Fix)
+        run: |
+          echo "物理擦除报错代码..."
+          find . -name "*.swift" -type f -exec sed -i '' 's/nonisolated deinit/deinit/g' {} +
+          find . -name "*.swift" -type f -exec sed -i '' 's/isolated deinit/deinit/g' {} +
+          find . -name "*.swift" -type f -exec sed -i '' 's/dnsServer.value/""/g' {} +
+          find . -name "*.swift" -type f -exec sed -i '' 's/ControlCenter.shared.reloadControls(ofKind: ExtensionProfile.controlKind)/Task { await ControlCenter.shared.reloadControls(ofKind: ExtensionProfile.controlKind) }/g' {} +
+          find . -name "*.swift" -type f -exec sed -i '' 's/glassEffect(.regular.interactive()/background(.regularMaterial/g' {} +
+          find . -name "*.swift" -type f -exec sed -i '' 's/tabViewBottomAccessory {/safeAreaInset(edge: .bottom) {/g' {} +
+
+      - name: Build unsigned IPA
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -scheme SFI \
+            -destination "generic/platform=iOS" \
+            -archivePath $RUNNER_TEMP/SFI.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            DEVELOPMENT_TEAM="" | xcpretty
+
+      - name: Package IPA
+        run: |
+          mkdir -p $RUNNER_TEMP/Payload
+          # 【唯一修改点】：把 SFI.app 改成了正确的 sing-box.app！
+          cp -r "$RUNNER_TEMP/SFI.xcarchive/Products/Applications/sing-box.app" \
+            $RUNNER_TEMP/Payload/
+          cd $RUNNER_TEMP
+          zip -r SFI-unsigned.ipa Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: SFI-unsigned
+          path: ${{ runner.temp }}/SFI-unsigned.ipa
 
